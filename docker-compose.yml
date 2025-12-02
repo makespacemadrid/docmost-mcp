@@ -4,7 +4,10 @@ services:
     image: docmost-mcp:latest
     environment:
       DOCMOST_BASE_URL: ${DOCMOST_BASE_URL:?Establece DOCMOST_BASE_URL}
-      DOCMOST_API_TOKEN: ${DOCMOST_API_TOKEN:?Establece DOCMOST_API_TOKEN}
+      DOCMOST_API_TOKEN: ${DOCMOST_API_TOKEN:-}
+      DOCMOST_EMAIL: ${DOCMOST_EMAIL:-}
+      DOCMOST_PASSWORD: ${DOCMOST_PASSWORD:-}
+      READ_ONLY: ${READ_ONLY:-false}
       PORT: ${PORT:-3000}
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
