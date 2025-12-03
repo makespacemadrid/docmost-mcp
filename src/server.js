@@ -142,6 +142,18 @@ function normalizeToolName(name) {
   return parts[0] || name;
 }
 
+function slugifyTitle(title) {
+  if (!title || typeof title !== 'string') return null;
+  return title
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/--+/g, '-');
+}
+
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
@@ -239,11 +251,13 @@ async function handleToolCall(body) {
       const page = await client.getPage(pageId);
       const slugId = page?.slugId;
       const spaceSlug = page?.space?.slug;
+      const titleSlug = slugifyTitle(page?.title);
       if (!slugId || !spaceSlug) {
         throw new Error('No se pudo resolver slugId o space.slug para construir la URL.');
       }
-      const url = `${appConfig.baseUrl}/${spaceSlug}/${slugId}`;
-      return { url, pageId, slugId, spaceSlug };
+      const slugSegment = titleSlug ? `${titleSlug}-${slugId}` : slugId;
+      const url = `${appConfig.baseUrl}/s/${spaceSlug}/p/${slugSegment}`;
+      return { url, pageId, slugId, spaceSlug, slugSegment };
     }
     default:
       throw new Error(`Herramienta desconocida: ${tool}`);
@@ -277,14 +291,14 @@ async function handleJsonRpc(body) {
     case 'tools/list':
       return { id, result: { tools: toJsonRpcTools(tools) } };
     case 'call_tool': {
-      const tool = params?.name;
-      const toolParams = params?.arguments || {};
+      const tool = params?.name || params?.tool || params?.toolName || params?.id;
+      const toolParams = params?.arguments || params?.args || {};
       const result = await handleToolCall({ tool, params: toolParams });
       return { id, result: { content: formatResultAsContent(result) } };
     }
     case 'tools/call': {
-      const tool = params?.name;
-      const toolParams = params?.arguments || {};
+      const tool = params?.name || params?.tool || params?.toolName || params?.id;
+      const toolParams = params?.arguments || params?.args || {};
       const result = await handleToolCall({ tool, params: toolParams });
       return { id, result: { content: formatResultAsContent(result) } };
     }
