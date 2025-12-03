@@ -2,6 +2,8 @@
 
 Servidor MCP HTTP ligero para interactuar con una instancia de Docmost a través de herramientas expuestas vía HTTP. No depende de paquetes externos, únicamente de Node.js (v18+).
 
+Versión actual: **0.1.1** (reflejada en `package.json` y servida en el descriptor MCP).
+
 ## Requisitos
 - Node.js 18 o superior (para contar con `fetch` nativo)
 - Variables de entorno:
@@ -61,7 +63,9 @@ curl -X POST http://localhost:3000/mcp/tool-call \
   }'
 ```
 
-## Docker Compose
+## Docker / Docker Compose
+
+Imagen pública: `ghcr.io/makespacemadrid/docmost-mcp:latest` (tag específico por commit: `ghcr.io/makespacemadrid/docmost-mcp:<sha>`).
 
 También puedes ejecutar el servidor con Docker Compose. Copia `.env.example` a `.env` y completa los valores:
 
@@ -71,9 +75,16 @@ cp .env.example .env
 
 > Si `.env` ya existe (equipo de pruebas), replica en él cualquier cambio que hagas en `env.example` y luego reconstruye para probar: `docker compose build` y `docker compose up -d`.
 
-Inicia el servicio:
+Inicia el servicio (descarga la imagen publicada o reconstruye si cambiaste código):
 
 ```bash
+# usar la imagen publicada
+docker compose up -d
+
+# o forzar pull si ya existe
+docker compose up -d --pull always
+
+# si modificaste código local y quieres construir
 docker compose up --build
 ```
 
@@ -104,17 +115,15 @@ La API quedará disponible en `http://localhost:3000`. Detén el servicio con `d
 - `npm run dev`: inicia el servidor en modo desarrollo (solo cambia la variable `NODE_ENV`).
 - `npm run lint`: valida que los archivos clave existan.
 
-## Notas
-- Las rutas hacia Docmost asumen los endpoints REST convencionales (por ejemplo, `/api/spaces`, `/api/pages`). Ajusta `src/docmostClient.js` si tu instancia difiere.
-- Al no depender de librerías externas, el proyecto funciona incluso sin acceso al registro de npm.
+## Integración con agentes MCP y notas
+- URL base sugerida: `http(s)://<host>:3000` (ejemplo en prod: `https://docmost-mcp.mksmad.org`).
+- Descriptor MCP disponible en `/.well-known/mcp` y `/mcp/.well-known/mcp`; incluye nombre y versión (`0.1.1`).
+- Algunos clientes POSTean al root (`/`); también se responde JSON-RPC `initialize/list_tools/call_tool` en `/`, `/mcp`, `/mc`, `/m`.
 - Si `READ_ONLY=true`, las herramientas de escritura (`create_page`, `update_page`) no se publican y las llamadas a ellas serán rechazadas.
-- MCP troubleshooting (para otros equipos/agents):
-  - URL base sugerida: `http(s)://<host>:3000` (ejemplo en prod: `https://docmost-mcp.mksmad.org`).
-  - Descriptor disponible en `/.well-known/mcp` y `/mcp/.well-known/mcp`; responde endpoints absolutos.
-  - Algunos clientes POSTean al root (`/`); también se responde JSON-RPC `initialize/list_tools/call_tool` en `/`, `/mcp`, `/mc`, `/m`.
-  - Comprobaciones rápidas:
-    ```bash
-    curl -i https://docmost-mcp.mksmad.org/.well-known/mcp
-    curl -s https://docmost-mcp.mksmad.org/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
-    ```
-  - Logs del servidor imprimen `[req] MÉTODO URL` y `[headers] {...}` para seguir qué solicita el cliente.
+- Las rutas hacia Docmost asumen los endpoints REST convencionales (p. ej. `/api/spaces`, `/api/pages`). Ajusta `src/docmostClient.js` si tu instancia difiere.
+- Comprobaciones rápidas:
+  ```bash
+  curl -i https://docmost-mcp.mksmad.org/.well-known/mcp
+  curl -s https://docmost-mcp.mksmad.org/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
+  ```
+  Los logs del servidor imprimen `[req] MÉTODO URL` y `[headers] {...}` para seguir qué solicita el cliente.
