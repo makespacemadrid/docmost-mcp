@@ -1,39 +1,145 @@
 const http = require('http');
+const { version: appVersion } = require('../package.json');
 const { loadConfig } = require('./config');
 const { DocmostClient } = require('./docmostClient');
+
+const MCP_PROTOCOL_VERSION = '2024-11-05';
+const SERVER_INFO = { name: 'docmost-mcp', version: appVersion || 'dev' };
+const MCP_INSTRUCTIONS =
+  'Herramientas MCP para leer y, si READ_ONLY es false, escribir en Docmost. ' +
+  'Usa list_spaces para descubrir espacios, list_pages para ver páginas de un espacio ' +
+  'y get_page/search_pages para leer contenido.';
 
 const baseTools = [
   {
     name: 'list_spaces',
     description: 'Devuelve los espacios disponibles en Docmost.',
     params: {},
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
   },
   {
     name: 'list_pages',
     description: 'Lista páginas dentro de un espacio. Requiere spaceId.',
     params: { spaceId: 'string' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spaceId: { type: 'string', description: 'ID del espacio' },
+      },
+      required: ['spaceId'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'get_page',
     description: 'Obtiene una página por su id.',
     params: { pageId: 'string' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'ID de la página' },
+      },
+      required: ['pageId'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'search_pages',
     description: 'Busca páginas por texto libre.',
     params: { query: 'string' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Texto a buscar' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'create_page',
     description: 'Crea una página nueva. Requiere title, content y spaceId.',
     params: { title: 'string', content: 'string', spaceId: 'string', folderId: 'string?' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Título de la página' },
+        content: { type: 'string', description: 'Contenido markdown/HTML de la página' },
+        spaceId: { type: 'string', description: 'ID del espacio en el que se crea la página' },
+        folderId: {
+          type: ['string', 'null'],
+          description: 'ID de la carpeta/página padre (opcional)',
+        },
+      },
+      required: ['title', 'content', 'spaceId'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'update_page',
     description: 'Actualiza una página existente. Requiere pageId y los campos a modificar.',
     params: { pageId: 'string', payload: 'object' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'ID de la página' },
+        payload: {
+          type: 'object',
+          description: 'Campos a modificar (ver API de Docmost)',
+        },
+      },
+      required: ['pageId', 'payload'],
+    },
+  },
+  {
+    name: 'get_page_url',
+    description:
+      'Devuelve la URL pública a partir de pageId. Úsalo tras list_pages/get_page/search_pages cuando necesites la URL compartible.',
+    params: { pageId: 'string' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'ID de la página' },
+      },
+      required: ['pageId'],
+      additionalProperties: false,
+    },
   },
 ];
+
+function formatResultAsContent(result) {
+  if (result === null || result === undefined) {
+    return [{ type: 'text', text: 'Sin contenido devuelto.' }];
+  }
+
+  if (typeof result === 'string') {
+    return [{ type: 'text', text: result }];
+  }
+
+  try {
+    return [{ type: 'text', text: JSON.stringify(result, null, 2) }];
+  } catch (error) {
+    return [{ type: 'text', text: String(result) }];
+  }
+}
+
+function toJsonRpcTools(tools) {
+  return tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema || { type: 'object' },
+  }));
+}
+
+function normalizeToolName(name) {
+  if (typeof name !== 'string') return name;
+  const parts = name.split('__');
+  return parts[0] || name;
+}
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
@@ -101,12 +207,14 @@ async function handleToolCall(body) {
     throw new Error('El campo "tool" es obligatorio.');
   }
 
-  const isWriteTool = tool === 'create_page' || tool === 'update_page';
+  const toolName = normalizeToolName(tool);
+
+  const isWriteTool = toolName === 'create_page' || toolName === 'update_page';
   if (appConfig?.readOnly && isWriteTool) {
     throw new Error('El servidor está en modo READ_ONLY, no se permiten operaciones de escritura.');
   }
 
-  switch (tool) {
+  switch (toolName) {
     case 'list_spaces':
       return client.listSpaces();
     case 'list_pages':
@@ -124,6 +232,18 @@ async function handleToolCall(body) {
       });
     case 'update_page':
       return client.updatePage(params.pageId, params.payload);
+    case 'get_page_url': {
+      const pageId = params.pageId;
+      if (!pageId) throw new Error('pageId es obligatorio para obtener la URL.');
+      const page = await client.getPage(pageId);
+      const slugId = page?.slugId;
+      const spaceSlug = page?.space?.slug;
+      if (!slugId || !spaceSlug) {
+        throw new Error('No se pudo resolver slugId o space.slug para construir la URL.');
+      }
+      const url = `${appConfig.baseUrl}/${spaceSlug}/${slugId}`;
+      return { url, pageId, slugId, spaceSlug };
+    }
     default:
       throw new Error(`Herramienta desconocida: ${tool}`);
   }
@@ -136,18 +256,45 @@ async function handleJsonRpc(body) {
   }
 
   switch (method) {
-    case 'initialize':
-      return { id, result: { capabilities: { tools: { list: true, call: true } } } };
+    case 'initialize': {
+      const clientInfo = params?.clientInfo;
+      if (clientInfo) {
+        console.log('[jsonrpc:init]', JSON.stringify(clientInfo));
+      }
+
+      return {
+        id,
+        result: {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          serverInfo: SERVER_INFO,
+          capabilities: { tools: { list: true, call: true, listChanged: true } },
+          instructions: MCP_INSTRUCTIONS,
+        },
+      };
+    }
     case 'list_tools':
-      return { id, result: { tools } };
+    case 'tools/list':
+      return { id, result: { tools: toJsonRpcTools(tools) } };
     case 'call_tool': {
       const tool = params?.name;
       const toolParams = params?.arguments || {};
       const result = await handleToolCall({ tool, params: toolParams });
-      return { id, result: { content: result } };
+      return { id, result: { content: formatResultAsContent(result) } };
     }
+    case 'tools/call': {
+      const tool = params?.name;
+      const toolParams = params?.arguments || {};
+      const result = await handleToolCall({ tool, params: toolParams });
+      return { id, result: { content: formatResultAsContent(result) } };
+    }
+    case 'ping':
+      return { id, result: { pong: true } };
+    case 'notifications/initialized':
+      return { id, result: { ok: true } };
     default:
-      throw new Error(`Método JSON-RPC desconocido: ${method}`);
+      const error = new Error(`Método JSON-RPC desconocido: ${method}`);
+      error.code = -32601;
+      throw error;
   }
 }
 
@@ -195,13 +342,16 @@ async function bootstrap() {
     return sendJson(res, 200, { message: 'Docmost MCP en ejecución', tools });
   }
     if (url === '/' && method === 'POST') {
+      let body;
       try {
-        const body = await parseJsonBody(req);
+        body = await parseJsonBody(req);
         const rpc = await handleJsonRpc(body);
         return sendJsonRpc(res, rpc.id, { result: rpc.result });
       } catch (error) {
         console.error('Error en JSON-RPC /:', error);
-        return sendJsonRpcError(res, null, -32600, error.message);
+        const id = body?.id ?? null;
+        const code = typeof error.code === 'number' ? error.code : -32600;
+        return sendJsonRpcError(res, id, code, error.message);
       }
     }
 
@@ -225,13 +375,16 @@ async function bootstrap() {
     }
 
   if ((url === '/mcp' || url === '/mc' || url === '/m') && method === 'POST') {
+    let body;
     try {
-      const body = await parseJsonBody(req);
+      body = await parseJsonBody(req);
       const rpc = await handleJsonRpc(body);
       return sendJsonRpc(res, rpc.id, { result: rpc.result });
     } catch (error) {
       console.error('Error en JSON-RPC /mcp:', error);
-      return sendJsonRpcError(res, null, -32600, error.message);
+      const id = body?.id ?? null;
+      const code = typeof error.code === 'number' ? error.code : -32600;
+      return sendJsonRpcError(res, id, code, error.message);
     }
   }
 
@@ -242,6 +395,14 @@ async function bootstrap() {
 
     return sendJson(res, 200, {
       protocol: 'mcp-http-1',
+      mcp: { version: MCP_PROTOCOL_VERSION },
+      server: SERVER_INFO,
+      instructions: MCP_INSTRUCTIONS,
+      transport: {
+        type: 'http',
+        endpoint: `${base}/mcp`,
+      },
+      capabilities: { tools: { listChanged: true } },
       endpoints: {
         tools: `${base}/mcp/tools`,
         call: `${base}/mcp/tool-call`,
